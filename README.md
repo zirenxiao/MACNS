@@ -4,7 +4,11 @@ Code and data used in the paper MACNS, DOI:
 
 ### Code
 
-To be released soon...
+In `gppo` directory.
+
+#### Usage
+
+To be released..
 
 ### Data
 

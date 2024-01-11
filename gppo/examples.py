@@ -1,0 +1,95 @@
+import os
+import shutil
+import sys
+
+import numpy as np
+from sb3_contrib import MaskablePPO
+from torch_geometric.data import Data
+import torch
+
+
+def create_torch_graph_data(s: torch.Tensor, num_players=None):
+    """
+    Transform state into graph data point
+    :param num_players:
+    :param s: a state from the environment
+    :return: a data point with node features, edge indexes and number of features each node
+    """
+    if num_players is None:
+        num_players = number_players
+    assert num_players >= 2
+    ei = [(0, 1), (0, 2), (1, 2), (2, 1), (0, 3), (2, 3), (3, 2), (0, 4), (3, 4), (4, 3)]
+    # ei = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 1), (2, 3), (3, 1), (3, 2), (0, 4), (1, 4), (1, 5), (2, 5), (2, 6), (3, 6)]
+    # ei = [(i, j) for i in range(num_players) for j in range(num_players) if i != j] + []
+    ei = torch.tensor(ei, dtype=torch.long)
+    # node_feature = torch.reshape(s[:, [0, 1, 2, 0, 3, 4]], (-1, 3))
+    # node_feature = torch.reshape(s[:, [0, 1, 2, 3, 0, 4, 5, 6]], (-1, 4))
+    node_feature = torch.reshape(s, (-1, 2))
+    # node_feature = torch.reshape(s[:, [0, 4, 1, 4, 2, 4, 3, 4, 0, 1, 1, 2, 2, 3]], (-1, 2))
+    data = Data(x=node_feature, edge_index=ei.clone().t().contiguous(), feature_size=node_feature.size()[0])
+    return data
+
+
+if __name__ == "__main__":
+    if len(sys.argv) > 1:
+        log_path = sys.argv[1]
+    else:
+        log_path = 'logs2/'
+
+    use_gpu_device = 'cuda:0'
+    number_players = 5
+
+    env = NewMazeEnv(targets=[22],
+                     # init_positions=[37, 41, 6, 4, 3],
+                     init_positions=[np.random.randint(0, 100) for _ in range(number_players)],
+                     max_episode_len=1000,
+                     log_path=log_path,
+                     random_exp=True,
+                     diff_speed=False)
+
+    shutil.copyfile(os.path.basename(__file__), f'{log_path}{os.path.basename(__file__)}')
+    print(f"backup current script to {log_path}")
+    # run = wandb.init(
+    #     entity='gorl',
+    #     project="gnn-drl",
+    #     sync_tensorboard=True,  # auto-upload sb3's tensorboard metrics
+    #     monitor_gym=True,  # auto-upload the videos of agents playing the game
+    #     save_code=False,  # optional
+    # )
+
+    # agent = PPO.load("ppo")
+    # env.set_agent(agent)
+    # obs = env.reset()
+    # for i in range(1000):
+    #     obs, reward, done, info = env.step(agent.predict(obs))
+    #     if done:
+    #         env.render()
+    #         obs = env.reset()
+    #         break
+    goal_episodes = 1000
+    # env = gym.make("CartPole-v1")
+    policy_kwargs = dict(share_features_extractor=False,
+                         state_space=env.observation_space.shape[0],
+                         graph_fn=create_torch_graph_data)
+
+    agent = MaskablePPO(MaskableActorCriticPolicyWithGNN, env, verbose=2, policy_kwargs=policy_kwargs,
+                        device=use_gpu_device, batch_size=64)
+    # agent = MaskablePPO(MaskableActorCriticPolicy, env, verbose=0)
+    # agent = PPO('MlpPolicy', env, verbose=2, ent_coef=0.001)
+    # agent = RecurrentPPO('MlpLstmPolicy', env, verbose=2, n_steps=2048)
+    # agent = TRPO('MlpPolicy', env, verbose=2, n_steps=2048)
+
+    env.set_agent(agent)
+    agent.set_logger(configure(log_path, ["stdout", "csv"]))
+    # output explanation: https://stable-baselines3.readthedocs.io/en/master/common/logger.html
+    try:
+        agent.learn(total_timesteps=goal_episodes * 2048)  # , callback=WandbCallback(
+        #     gradient_save_freq=100,
+        #     model_save_path=f"models/{run.id}",
+        #     verbose=2,
+        # ))
+    except KeyboardInterrupt:
+        print("detected keyboard interrupt...saving model...")
+    agent.save(f"{log_path}model")
+
+    # run.finish()
