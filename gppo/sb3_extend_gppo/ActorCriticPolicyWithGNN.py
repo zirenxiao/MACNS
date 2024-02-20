@@ -1,4 +1,5 @@
 import numpy as np
+from stable_baselines3.common.policies import ActorCriticPolicy
 from torch import nn
 from torch_geometric.data import Data
 from torch_geometric.nn.conv import GCNConv, GATConv
@@ -16,7 +17,40 @@ class MaskableActorCriticPolicyWithGNN(MaskableActorCriticPolicy):
         super().__init__(*args, **kwargs)
 
     def _build_mlp_extractor(self) -> None:
-        self.mlp_extractor = GNNNetwork(self.features_dim, graph_fn=self.graph_fn, device=use_gpu_device)
+        self.mlp_extractor = GNNNetwork(self.features_dim, graph_fn=self.graph_fn, device='cuda')
+
+    def evaluate_actions(
+            self,
+            obs: torch.Tensor,
+            actions: torch.Tensor,
+            action_masks: Optional[np.ndarray] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        features = self.extract_features(obs)
+        if self.share_features_extractor:
+            latent_pi, latent_vf = self.mlp_extractor(features)
+        else:
+            pi_features, vf_features = features
+            latent_pi = torch.cat(
+                [self.mlp_extractor.forward_actor(torch.reshape(each_pi_features, (-1, self.state_space)))
+                 for each_pi_features in pi_features])
+            latent_vf = self.mlp_extractor.forward_critic(vf_features)
+
+        distribution = self._get_action_dist_from_latent(latent_pi)
+        if action_masks is not None:
+            distribution.apply_masking(action_masks)
+        log_prob = distribution.log_prob(actions)
+        values = self.value_net(latent_vf)
+        return values, log_prob, distribution.entropy()
+
+
+class ActorCriticPolicyWithGNN(ActorCriticPolicy):
+    def __init__(self, *args, state_space=None, graph_fn=None, **kwargs):
+        self.graph_fn = graph_fn
+        self.state_space = state_space
+        super().__init__(*args, **kwargs)
+
+    def _build_mlp_extractor(self) -> None:
+        self.mlp_extractor = GNNNetwork(self.features_dim, graph_fn=self.graph_fn, device='cuda')
 
     def evaluate_actions(
             self,
@@ -85,7 +119,7 @@ class GNN(nn.Module):
         assert graph_fn is not None
         self.graph_fn = graph_fn
         self.device = device
-        self.conv1 = GATConv(2, hidden_dim)
+        self.conv1 = GATConv(1, hidden_dim)
         # self.conv1 = GCNConv(number_players, action_space)
         self.conv2 = GATConv(hidden_dim, action_space)
         # self.conv2 = GCNConv(hidden_dim, action_space)
